@@ -242,57 +242,97 @@ fn hex_to_bytes(hex: &str) -> Vec<u8> {
 pub fn encrypt_aes128(input: &str, key_s: &str) -> String {
     let mut key = key_s.to_string();
     
-    // Дополняем ключ 1 до 16 символов
+    // Дополняем ключ до 16 символов
     while key.len() < 16 {
         key.push('1'); 
     }
 
     if key.len() != 16 {
-        panic!("Ключ должен быть длиной <=16 символов (128 бит).");
+        panic!("Ключ должен быть длиной 16 символов (128 бит).");
     }
-    let state = string_to_state(input);
-    let key_bytes: [u8; 16] = key.as_bytes().try_into().expect("Ключ должен быть длиной 16 байт.");
 
-    let mut state_copy = state; // Создаем изменяемую копию состояния
-    encrypt_block_aes128(&mut state_copy, &key_bytes);
+    let key_bytes: [u8; 16] = key.as_bytes().try_into().expect("Ключ должен быть длиной 16 байт.");
+    
+    // Преобразуем входные данные в байты и дополняем
+    let input_bytes = input.as_bytes();
+    let padded_input = pkcs7_pad(input_bytes, 16);
+
+    // Разбиваем на блоки
+    let mut encrypted_data = Vec::new();
+    
+    for chunk in padded_input.chunks(16) {
+        let mut state = string_to_state(std::str::from_utf8(chunk).unwrap());
+        encrypt_block_aes128(&mut state, &key_bytes);
+        let encrypted_bytes = state_to_bytes(&state);
+        encrypted_data.extend(encrypted_bytes);
+    }
 
     // Кодируем зашифрованные байты в строку в формате hex
-    let encrypted_bytes = state_to_bytes(&state_copy);
-    bytes_to_hex(&encrypted_bytes)
+    bytes_to_hex(&encrypted_data)
+}
+
+
+// Пример реализации функции дополнения
+fn pkcs7_pad(data: &[u8], block_size: usize) -> Vec<u8> {
+    let padding_length = block_size - (data.len() % block_size);
+    let mut padded = data.to_vec();
+    padded.extend(vec![padding_length as u8; padding_length]);
+    padded
+}
+
+fn remove_pkcs7_padding(data: &[u8]) -> Vec<u8> {
+    if data.is_empty() {
+        return data.to_vec();
+    }
+
+    let padding_length = data[data.len() - 1] as usize;
+
+    // Проверяем, что длина дополнения корректна
+    if padding_length > 0 && padding_length <= 16 {
+        let valid_padding = &data[data.len() - padding_length..];
+        if valid_padding.iter().all(|&byte| byte == padding_length as u8) {
+            return data[..data.len() - padding_length].to_vec();
+        }
+    }
+
+    data.to_vec() // Если дополнение некорректно, возвращаем оригинальные данные
 }
 
 pub fn decrypt_aes128(input: &str, key_s: &str) -> String {
     let mut key = key_s.to_string();
     
-    // Дополняем ключ 1 до 16 символов
+    // Дополняем ключ до 16 символов
     while key.len() < 16 {
         key.push('1');
     }
 
-    if key.len() != 16 {
-        panic!("Ключ должен быть длиной <=16 символов (128 бит).");
-    }
-
     // Декодируем строку hex в байты
     let encrypted_bytes = hex_to_bytes(input);
-    let mut state: [[u8; 4]; 4] = [[0; 4]; 4];
-
-    for i in 0..4 {
-        for j in 0..4 {
-            let index = i * 4 + j;
-            state[j][i] = if index < encrypted_bytes.len() {
-                encrypted_bytes[index]
-            } else {
-                0 // Заполняем нулями, если массив короче 16 байт
-            };
-        }
-    }
-
     let key_bytes: [u8; 16] = key.as_bytes().try_into().expect("Ключ должен быть длиной 16 байт.");
 
-    let mut state_copy = state; // Создаем изменяемую копию состояния
-    decrypt_block_aes128(&mut state_copy, &key_bytes);
+    let mut decrypted_data = Vec::new();
+
+    // Обрабатываем входные данные по блокам по 16 байт
+    for chunk in encrypted_bytes.chunks(16) {
+        let mut state: [[u8; 4]; 4] = [[0; 4]; 4];
+
+        for i in 0..4 {
+            for j in 0..4 {
+                let index = i * 4 + j;
+                state[j][i] = chunk[index];
+            }
+        }
+
+        let mut state_copy = state; // Создаем изменяемую копию состояния
+        decrypt_block_aes128(&mut state_copy, &key_bytes);
+
+        // Добавляем расшифрованные байты в результирующий вектор
+        decrypted_data.extend(state_to_bytes(&state_copy));
+    }
+
+    // Удаляем дополнение PKCS#7
+    decrypted_data = remove_pkcs7_padding(&decrypted_data);
 
     // Преобразуем расшифрованные байты обратно в строку
-    String::from_utf8_lossy(&state_to_bytes(&state_copy)).to_string()
+    String::from_utf8_lossy(&decrypted_data).to_string()
 }
